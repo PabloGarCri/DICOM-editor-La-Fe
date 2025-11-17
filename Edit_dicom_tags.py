@@ -1,17 +1,27 @@
 import os
+import fnmatch
+import numpy as np
 import pydicom
 from pydicom.datadict import tag_for_keyword
 from pydicom.uid import generate_uid
 
+
 # --- Carpetas ---
-input_folder = "/Users/pablogc/Downloads/CURRO/Medidas/Next La Fe/dcm NEXTMRI_005"  # Carpeta con los archivos originales
-output_folder = "dicoms_editados"  # Carpeta donde guardar los archivos editados
+input_folder = "/home/pablogc/Descargas/Physio II/NextLaFe/dcmjueves1"
+output_folder = "/home/pablogc/Descargas/Physio II/NextLaFe/dicoms_editados_jueves1"
 os.makedirs(output_folder, exist_ok=True)
 
-# --- Tags a editar según tus especificaciones ---
-edit_tags = {
+# Nombre del paciente = nombre de la carpeta
+patient_name = os.path.basename(input_folder)
+
+
+# -----------------------------------------------------------
+#                 TAGS COMUNES A TODAS LAS SERIES
+# -----------------------------------------------------------
+common_tags = {
     "Manufacturer": "i3M",
-    "StudyID":"Protocolo La Fe",
+    "StudyID": patient_name,
+    "PatientName": patient_name,
     "ManufacturerModelName": "NextMRI-II",
     "InstitutionName": "MRILab - I3M - UPV",
     "Model": "NEXTMRI II",
@@ -19,23 +29,62 @@ edit_tags = {
     "OperatorsName": "",
     "SoftwareVersions": "MARGE v0.8.1-35g25a2be1",
     "BodyPartExamined": "BRAIN",
-    "PatientName": "NEXTMRI_005 - Portable",
-    "PatientID": "NEXTMRI_005 - Portable",
-    "PatientSex": "F",
-    "PatientWeight": "68",
+    "PatientSex": "H",
+    "PatientWeight": "80",
     "PatientBirthDate": "19940101",
+    "ImagingFrequency": "3.63"
+}
+
+
+# -----------------------------------------------------------
+#            TAGS ESPECÍFICOS DE CADA SECUENCIA
+# -----------------------------------------------------------
+
+# --- T1 ---
+tags_T1 = {
+    "SequenceName": "TSE_T1",
+    "ScanningSequence": "TSE",
+    "SequenceVariant": "T1W",
+    "PulseSequenceName": "T1W",
+    "SeriesDescription": "T1-weighted Axial Portable"
+}
+
+# --- FLAIR ---
+tags_FLAIR = {
     "SequenceName": "TSE_T2",
     "ScanningSequence": "TSE",
     "SequenceVariant": "FLAIR",
-    "ScanOptions": "",
     "PulseSequenceName": "T2_FLAIR",
-    "SeriesDescription": "T2-weighted Axial BRAIN FLAIR Portable",
-    "ImagingFrequency": "3.63"
-
+    "SeriesDescription": "T2-weighted Axial BRAIN FLAIR Portable"
 }
 
-# --- Procesamiento de los DICOM ---
+
+# --- UIDs por serie ---
+series_uid_T1 = generate_uid()
+series_uid_FLAIR = generate_uid()
+
+
+def apply_tags(ds, tags):
+    """Aplica correctamente tags respetando VR."""
+    for key, value in tags.items():
+        tag = tag_for_keyword(key)
+        if tag is None:
+            continue
+        try:
+            if tag in ds:
+                ds[tag].value = value
+            else:
+                setattr(ds, key, value)
+        except Exception:
+            # Evita crashear por VR incorrecto
+            pass
+
+
+# -----------------------------------------------------------
+#                    PROCESAMIENTO PRINCIPAL
+# -----------------------------------------------------------
 for fname in os.listdir(input_folder):
+
     if not fname.lower().endswith(".dcm"):
         continue
 
@@ -45,33 +94,41 @@ for fname in os.listdir(input_folder):
     try:
         ds = pydicom.dcmread(input_path)
 
-        # Editar tags
-        for key, value in edit_tags.items():
-            try:
-                tag = tag_for_keyword(key)
-                if tag is None:
-                    continue
-                if tag in ds:
-                    ds[tag].value = value
-                else:
-                    setattr(ds, key, value)
-            except Exception as e:
-                print(f"Advertencia al editar {key}: {e}")
+        # --- Saltar LOCALIZER ---
+        if fnmatch.fnmatch(fname.lower(),"*Localizer"):
+            print(f"⏭ Saltando Localizer: {fname}")
+            continue
 
-        # Generar nuevos UIDs aleatorios (para separar estudios y series)
-        ds.StudyInstanceUID = generate_uid()
-        ds.SeriesInstanceUID = generate_uid()
+        # --- Patient ID/Name automáticos ---
+        ds.PatientID = patient_name
+        ds.PatientName = patient_name
+
+        # --- Tags comunes ---
+        apply_tags(ds, common_tags)
+
+        # --- T1 ------------------------------------------------------
+        if fnmatch.fnmatch(fname.lower(), "*t1*"):
+            apply_tags(ds, tags_T1)
+            ds.SeriesInstanceUID = series_uid_T1
+
+        # --- FLAIR ---------------------------------------------------
+        if fnmatch.fnmatch(fname.lower(), "*flair*"):
+            apply_tags(ds, tags_FLAIR)
+            ds.SeriesInstanceUID = series_uid_FLAIR
+
+            # Flip vertical (arriba-abajo)
+            vol = ds.pixel_array
+            vol_flipped = np.flip(vol, axis=1)  # eje 1 = vertical
+            ds.PixelData = vol_flipped.tobytes()
+
+        # --- Nuevo UID por imagen ---
         ds.SOPInstanceUID = generate_uid()
 
         # Guardar
         ds.save_as(output_path)
-        print(f"✔ Editado y guardado: {output_path}")
+        print(f"✔ Editado y guardado: {fname}")
 
     except Exception as e:
-        print(f"❌ Error con {fname}: {e}")
+        print(f"❌ Error en {fname}: {e}")
 
-print("\n✅ Edición completa de todos los DICOMs.")
-
-ds = pydicom.dcmread('/Users/pablogc/Downloads/CURRO/Medidas/Next La Fe/dicoms_editados/RareDoubleImage.2025.11.07.14.21.40.302.dcm')
-for element in ds:
-    print(element)
+print("\n✅ Edición completa.")
